@@ -90,6 +90,70 @@ class TestWrapCommand:
         assert "exit 126" in wrapped
 
 
+class TestAtomicSnapshotWrite:
+    """Regression for #38249: concurrent terminal calls in one session both
+    source AND rewrite the shared env snapshot. A non-atomic ``export -p >
+    snap`` truncates-then-writes in place, so a concurrent ``source snap`` can
+    read a half-written file and embed ``declare -x``/``export`` fragments into
+    PATH, breaking ``ls``/``git``/``tr`` with command-not-found. The write must
+    be atomic: ``export -p > snap.tmp.$$`` then ``mv -f snap.tmp.$$ snap`` (mv
+    is atomic on POSIX same-fs), so a reader sees the old-or-new complete file,
+    never a torn one."""
+
+    def test_wrap_command_uses_atomic_temp_then_mv(self):
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("echo hi", "/tmp")
+        # Writes go to a temp file, not directly over the live snapshot.
+        assert "export -p > " in wrapped
+        assert ".tmp." in wrapped
+        # Then an atomic rename onto the real snapshot path.
+        assert "mv -f " in wrapped
+        # The env-dump must NOT write the live snapshot in place (the bug).
+        snap = env._snapshot_path
+        assert f"export -p > {snap} " not in wrapped
+        assert f"export -p > '{snap}'" not in wrapped
+
+    def test_temp_path_is_per_process_unique(self):
+        """``$$`` (bash PID) makes concurrent processes use distinct temp files
+        so their temp writes can't clobber each other before the mv."""
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("echo hi", "/tmp")
+        assert ".tmp.$$" in wrapped or ".tmp.'$$'" in wrapped or "'.tmp.'$$" in wrapped
+
+    def test_temp_path_static_part_is_quoted(self):
+        """The static path portion must be shlex-quoted (Windows/Git-Bash
+        ``C:/Users/...`` or spaces) while ``$$`` stays outside the quotes so
+        it still expands. The bug-prone form is a bare unquoted temp path."""
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        env._snapshot_path = "/tmp/has space/hermes-snap-x.sh"
+        wrapped = env._wrap_command("echo hi", "/tmp")
+        # The space in the path must be quoted, not left bare in the temp name.
+        assert "/tmp/has space/hermes-snap-x.sh.tmp.$$" not in wrapped
+        # $$ must remain shell-expandable (not swallowed inside quotes as a literal).
+        assert "$$" in wrapped
+
+    def test_init_session_bootstrap_also_atomic(self):
+        """The init_session bootstrap (first snapshot write) must be atomic too
+        — it's the same shared file a concurrent command could source."""
+        env = _TestableEnv()
+        captured = {}
+
+        def fake_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
+            captured["cmd"] = cmd_string
+            raise RuntimeError("stop after capture")  # we only need the script
+
+        env._run_bash = fake_run_bash  # type: ignore[assignment]
+        try:
+            env.init_session()
+        except Exception:
+            pass
+        boot = captured.get("cmd", "")
+        assert ".tmp." in boot and "mv -f " in boot, boot
+
+
 class TestExtractCwdFromOutput:
     def test_happy_path(self):
         env = _TestableEnv()

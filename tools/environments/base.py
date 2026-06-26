@@ -371,13 +371,28 @@ class BaseEnvironment(ABC):
         # backends) into every terminal-tool response.
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
+        # Use atomic file replacement: write to a temp file, then mv to the
+        # final path.  This prevents concurrent source() calls from reading a
+        # half-written snapshot when another terminal command finishes and
+        # rewrites the env vars (issue #38249).  `mv` is atomic on POSIX
+        # when src and dest are on the same filesystem, so source() will
+        # either see the old complete snapshot or the new complete one —
+        # never a partial/truncated file.
+        #
+        # Quote the static path portion and leave ``$$`` (the bash PID, which
+        # makes the temp name unique per concurrent process) outside the
+        # quotes so it still expands.  Matches the Windows/Git-Bash quoting
+        # care taken for ``_quoted_snap`` — an unquoted temp path with a
+        # ``C:/Users/...`` drive letter or a space would otherwise break.
+        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$$"
         bootstrap = (
-            f"export -p > {_quoted_snap}\n"
-            f"declare -f | grep -vE '^_[^_]' >> {_quoted_snap}\n"
-            f"alias -p >> {_quoted_snap}\n"
-            f"echo 'shopt -s expand_aliases' >> {_quoted_snap}\n"
-            f"echo 'set +e' >> {_quoted_snap}\n"
-            f"echo 'set +u' >> {_quoted_snap}\n"
+            f"export -p > {_snap_tmp}\n"
+            f"declare -f | grep -vE '^_[^_]' >> {_snap_tmp}\n"
+            f"alias -p >> {_snap_tmp}\n"
+            f"echo 'shopt -s expand_aliases' >> {_snap_tmp}\n"
+            f"echo 'set +e' >> {_snap_tmp}\n"
+            f"echo 'set +u' >> {_snap_tmp}\n"
+            f"mv -f {_snap_tmp} {_quoted_snap}\n"
             f"builtin cd {_quoted_cwd} 2>/dev/null || true\n"
             f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true\n"
             f"printf '\\n{self._cwd_marker}%s{self._cwd_marker}\\n' \"$(pwd -P)\"\n"
@@ -427,6 +442,10 @@ class BaseEnvironment(ABC):
         # :meth:`init_session` for the same fix on the bootstrap block.
         _quoted_snap = shlex.quote(self._snapshot_path)
         _quoted_cwd_file = shlex.quote(self._cwd_file)
+        # Atomic env-snapshot replacement (issue #38249) — write to a unique
+        # temp file, then mv over the snapshot so a concurrent source() never
+        # reads a truncated file.  Static path quoted; ``$$`` left to expand.
+        _snap_tmp = shlex.quote(self._snapshot_path + ".tmp.") + "$$"
 
         parts = []
 
@@ -451,9 +470,10 @@ class BaseEnvironment(ABC):
         parts.append(f"eval '{escaped}'")
         parts.append("__hermes_ec=$?")
 
-        # Re-dump env vars to snapshot (last-writer-wins for concurrent calls)
+        # Re-dump env vars to snapshot (atomic replacement to avoid races)
         if self._snapshot_ready:
-            parts.append(f"export -p > {_quoted_snap} 2>/dev/null || true")
+            parts.append(f"export -p > {_snap_tmp} 2>/dev/null || true")
+            parts.append(f"mv -f {_snap_tmp} {_quoted_snap} 2>/dev/null || true")
 
         # Write CWD to file (local reads this) and stdout marker (remote parses this)
         parts.append(f"pwd -P > {_quoted_cwd_file} 2>/dev/null || true")
