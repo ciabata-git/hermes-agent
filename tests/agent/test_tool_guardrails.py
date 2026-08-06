@@ -107,6 +107,167 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
     assert blocked.count == 2
 
 
+def test_web_extract_null_error_is_success_in_after_call_fallback():
+    result = json.dumps({
+        "results": [{"url": "https://example.com", "content": "Example", "error": None}],
+    })
+
+    assert classify_tool_failure("web_extract", result) == (False, "")
+
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(exact_failure_warn_after=1, no_progress_warn_after=99)
+    )
+    decision = controller.after_call("web_extract", {"urls": ["https://example.com"]}, result)
+
+    assert decision.action == "allow"
+
+
+def test_web_extract_error_without_content_is_failure_in_after_call_fallback():
+    result = json.dumps({
+        "results": [{"url": "https://example.com/missing", "content": "", "error": "404"}],
+    })
+
+    assert classify_tool_failure("web_extract", result) == (True, " [404]")
+
+
+def test_web_extract_long_item_error_suffix_matches_display():
+    result = json.dumps({
+        "results": [
+            {
+                "url": "https://example.com/missing",
+                "content": "",
+                "error": "x" * 200,
+            }
+        ],
+    })
+    from agent.display import _detect_tool_failure
+
+    assert classify_tool_failure("web_extract", result) == _detect_tool_failure(
+        "web_extract", result
+    )
+
+
+def test_web_extract_partial_success_is_not_overall_failure_in_fallback():
+    result = json.dumps({
+        "results": [
+            {"url": "https://example.com", "content": "Example", "error": None},
+            {"url": "https://example.test", "content": "", "error": "timeout"},
+        ],
+    })
+    assert classify_tool_failure("web_extract", result) == (False, "")
+
+
+def test_web_extract_item_with_content_and_error_is_usable_in_fallback():
+    result = json.dumps({
+        "results": [
+            {
+                "url": "https://example.com",
+                "content": "Useful partial text",
+                "error": "truncated",
+            }
+        ],
+    })
+    assert classify_tool_failure("web_extract", result) == (False, "")
+
+
+def test_web_extract_blank_result_does_not_mask_failure_in_fallback():
+    result = json.dumps({
+        "results": [
+            {"url": "https://example.com", "content": "", "error": None},
+            {"url": "https://example.test", "content": "", "error": "timeout"},
+        ],
+    })
+    assert classify_tool_failure("web_extract", result) == (True, " [timeout]")
+
+
+def test_web_extract_empty_results_is_failure_in_fallback():
+    result = json.dumps({"results": []})
+    is_failure, suffix = classify_tool_failure("web_extract", result)
+    assert is_failure is True
+    assert "inaccessible" in suffix.lower()
+
+
+def test_web_extract_whitespace_only_content_is_failure_in_fallback():
+    result = json.dumps({
+        "results": [
+            {"url": "https://example.com", "content": "   \n", "error": None}
+        ],
+    })
+    is_failure, suffix = classify_tool_failure("web_extract", result)
+    assert is_failure is True
+    assert "inaccessible" in suffix.lower()
+
+
+def test_malformed_web_extract_envelope_uses_generic_guardrail_fallback():
+    result = json.dumps({"results": [{"failed": True}]})
+    assert classify_tool_failure("web_extract", result) == (True, " [error]")
+
+
+def test_web_extract_outer_error_precedes_successful_item_in_fallback():
+    result = json.dumps({
+        "success": False,
+        "error": "outer boom",
+        "results": [
+            {"url": "https://example.com", "content": "Example", "error": None}
+        ],
+    })
+    assert classify_tool_failure("web_extract", result) == (True, " [outer boom]")
+
+
+def test_web_extract_outer_message_precedes_successful_item_in_fallback():
+    result = json.dumps({
+        "message": "outer boom",
+        "results": [
+            {"url": "https://example.com", "content": "Example", "error": None}
+        ],
+    })
+    assert classify_tool_failure("web_extract", result) == (True, " [outer boom]")
+
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(exact_failure_warn_after=1, no_progress_warn_after=99)
+    )
+    decision = controller.after_call(
+        "web_extract", {"urls": ["https://example.com"]}, result
+    )
+    assert decision.action == "warn"
+
+
+def test_web_extract_outer_failed_flag_precedes_successful_item_in_fallback():
+    result = json.dumps({
+        "failed": True,
+        "results": [
+            {"url": "https://example.com", "content": "Example", "error": None}
+        ],
+    })
+    assert classify_tool_failure("web_extract", result) == (True, " [error]")
+
+
+def test_web_extract_outer_success_false_precedes_successful_item_in_fallback():
+    result = json.dumps({
+        "success": False,
+        "error": None,
+        "results": [
+            {"url": "https://example.com", "content": "Example", "error": None}
+        ],
+    })
+    assert classify_tool_failure("web_extract", result) == (True, " [error]")
+
+
+def test_web_extract_long_outer_error_suffix_matches_display():
+    result = json.dumps({
+        "success": False,
+        "error": "x" * 200,
+        "results": [
+            {"url": "https://example.com", "content": "Example", "error": None}
+        ],
+    })
+    from agent.display import _detect_tool_failure
+
+    assert classify_tool_failure("web_extract", result) == _detect_tool_failure(
+        "web_extract", result
+    )
+
+
 
 
 

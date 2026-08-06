@@ -96,6 +96,114 @@ class TestDetectToolFailureStructured:
         result = json.dumps({"success": True, "data": "hello"})
         assert _detect_tool_failure("web_search", result) == (False, "")
 
+    def test_web_extract_empty_error_field_is_success(self):
+        result = json.dumps({
+            "results": [{"url": "https://example.com", "content": "Example", "error": None}],
+        })
+        assert _detect_tool_failure("web_extract", result) == (False, "")
+
+    def test_web_extract_all_failed_is_failure(self):
+        result = json.dumps({
+            "results": [{"url": "https://example.com", "content": "", "error": "404"}],
+        })
+        assert _detect_tool_failure("web_extract", result) == (True, " [404]")
+
+    def test_web_extract_partial_success_is_not_overall_failure(self):
+        result = json.dumps({
+            "results": [
+                {"url": "https://example.com", "content": "Example", "error": None},
+                {"url": "https://example.test", "content": "", "error": "timeout"},
+            ],
+        })
+        assert _detect_tool_failure("web_extract", result) == (False, "")
+
+    def test_web_extract_item_with_content_and_error_is_usable(self):
+        result = json.dumps({
+            "results": [
+                {
+                    "url": "https://example.com",
+                    "content": "Useful partial text",
+                    "error": "truncated",
+                }
+            ],
+        })
+        assert _detect_tool_failure("web_extract", result) == (False, "")
+
+    def test_web_extract_blank_result_does_not_mask_failure(self):
+        result = json.dumps({
+            "results": [
+                {"url": "https://example.com", "content": "", "error": None},
+                {"url": "https://example.test", "content": "", "error": "timeout"},
+            ],
+        })
+        assert _detect_tool_failure("web_extract", result) == (True, " [timeout]")
+
+    def test_web_extract_only_blank_result_is_failure(self):
+        result = json.dumps({
+            "results": [{"url": "https://example.com", "content": "", "error": None}],
+        })
+        is_failure, suffix = _detect_tool_failure("web_extract", result)
+        assert is_failure is True
+        assert "inaccessible" in suffix.lower()
+
+    def test_web_extract_empty_results_is_failure(self):
+        result = json.dumps({"results": []})
+        is_failure, suffix = _detect_tool_failure("web_extract", result)
+        assert is_failure is True
+        assert "inaccessible" in suffix.lower()
+
+    def test_web_extract_whitespace_only_content_is_failure(self):
+        result = json.dumps({
+            "results": [
+                {"url": "https://example.com", "content": "   \n", "error": None}
+            ],
+        })
+        is_failure, suffix = _detect_tool_failure("web_extract", result)
+        assert is_failure is True
+        assert "inaccessible" in suffix.lower()
+
+    def test_malformed_web_extract_envelope_uses_generic_failure_fallback(self):
+        result = json.dumps({"results": [{"failed": True}]})
+        assert _detect_tool_failure("web_extract", result) == (True, " [error]")
+
+    def test_web_extract_outer_error_precedes_successful_item(self):
+        result = json.dumps({
+            "success": False,
+            "error": "outer boom",
+            "results": [
+                {"url": "https://example.com", "content": "Example", "error": None}
+            ],
+        })
+        assert _detect_tool_failure("web_extract", result) == (True, " [outer boom]")
+
+    def test_web_extract_outer_message_precedes_successful_item(self):
+        result = json.dumps({
+            "message": "outer boom",
+            "results": [
+                {"url": "https://example.com", "content": "Example", "error": None}
+            ],
+        })
+        assert _detect_tool_failure("web_extract", result) == (True, " [outer boom]")
+
+    def test_web_extract_outer_failed_flag_precedes_successful_item(self):
+        result = json.dumps({
+            "failed": True,
+            "results": [
+                {"url": "https://example.com", "content": "Example", "error": None}
+            ],
+        })
+        assert _detect_tool_failure("web_extract", result) == (True, " [error]")
+
+    def test_web_extract_outer_success_false_precedes_successful_item(self):
+        result = json.dumps({
+            "success": False,
+            "error": None,
+            "results": [
+                {"url": "https://example.com", "content": "Example", "error": None}
+            ],
+        })
+        assert _detect_tool_failure("web_extract", result) == (True, " [error]")
+
 
 
 class TestGetCuteToolMessageFailureSuffix:
