@@ -126,6 +126,46 @@ class TestDetectToolFailureStructured:
         result = json.dumps({"success": True, "data": "hello"})
         assert _detect_tool_failure("web_search", result) == (False, "")
 
+    def test_web_extract_error_null_with_content_is_success(self):
+        result = json.dumps({
+            "results": [
+                {"url": "https://example.com", "content": "Example", "error": None}
+            ]
+        })
+        assert _detect_tool_failure("web_extract", result) == (False, "")
+
+    def test_web_extract_all_failed_is_failure(self):
+        result = json.dumps({
+            "results": [
+                {"url": "https://example.com", "content": "", "error": "404"}
+            ]
+        })
+        assert _detect_tool_failure("web_extract", result) == (True, " [404]")
+
+    def test_web_extract_blank_or_whitespace_does_not_mask_failure(self):
+        result = json.dumps({
+            "results": [
+                {"url": "https://example.com", "content": "  \n", "error": None},
+                {"url": "https://example.test", "content": "", "error": "timeout"},
+            ]
+        })
+        assert _detect_tool_failure("web_extract", result) == (True, " [timeout]")
+
+    def test_web_extract_empty_results_is_failure(self):
+        result = json.dumps({"results": []})
+        failed, suffix = _detect_tool_failure("web_extract", result)
+        assert failed is True
+        assert "inaccessible" in suffix.lower()
+
+    def test_web_extract_outer_message_overrides_content(self):
+        result = json.dumps({
+            "message": "outer boom",
+            "results": [
+                {"url": "https://example.com", "content": "Example", "error": None}
+            ],
+        })
+        assert _detect_tool_failure("web_extract", result) == (True, " [outer boom]")
+
     def test_dict_without_error_or_success_uses_generic_heuristic(self):
         # Plain successful dict — should pass through the generic
         # heuristic which only fires on the string "Error" / '"error"' / etc.

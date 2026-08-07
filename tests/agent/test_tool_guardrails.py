@@ -147,6 +147,49 @@ def test_file_mutation_lint_error_result_is_not_a_tool_failure():
     assert classify_tool_failure("patch", patch_result) == (False, "")
 
 
+def test_web_extract_classification_matches_structured_contract():
+    success = json.dumps({
+        "results": [
+            {"url": "https://example.com", "content": "Example", "error": None}
+        ]
+    })
+    all_failed = json.dumps({
+        "results": [
+            {"url": "https://example.com", "content": "", "error": "404"}
+        ]
+    })
+    blank_plus_failure = json.dumps({
+        "results": [
+            {"url": "https://example.com", "content": "  \n", "error": None},
+            {"url": "https://example.test", "content": "", "error": "timeout"},
+        ]
+    })
+    outer_message = json.dumps({
+        "message": "outer boom",
+        "results": [
+            {"url": "https://example.com", "content": "Example", "error": None}
+        ],
+    })
+
+    assert classify_tool_failure("web_extract", success) == (False, "")
+    assert classify_tool_failure("web_extract", all_failed) == (True, " [404]")
+    assert classify_tool_failure("web_extract", blank_plus_failure) == (
+        True,
+        " [timeout]",
+    )
+    assert classify_tool_failure("web_extract", outer_message) == (
+        True,
+        " [outer boom]",
+    )
+
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(exact_failure_warn_after=1, no_progress_warn_after=99)
+    )
+    assert controller.after_call(
+        "web_extract", {"urls": ["https://example.com"]}, success
+    ).action == "allow"
+
+
 def test_same_tool_varying_args_warns_by_default_without_halting():
     controller = ToolCallGuardrailController(
         ToolCallGuardrailConfig(same_tool_failure_warn_after=2, same_tool_failure_halt_after=3)

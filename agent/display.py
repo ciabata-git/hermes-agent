@@ -17,7 +17,12 @@ from typing import Any
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import (
+    TOOL_ERROR_SUFFIX_MAX_LEN,
+    classify_web_extract_failure,
+    file_mutation_result_landed,
+    trim_tool_error,
+)
 
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
@@ -1243,25 +1248,12 @@ class KawaiiSpinner:
 # Cute tool message (completion line that replaces the spinner)
 # =========================================================================
 
-_ERROR_SUFFIX_MAX_LEN = 48
+_ERROR_SUFFIX_MAX_LEN = TOOL_ERROR_SUFFIX_MAX_LEN
 
 
 def _trim_error(msg: str) -> str:
-    """Shrink an error message for inline display in a tool status line.
-
-    Strips overly long absolute paths down to just the filename so the
-    suffix stays readable on narrow terminals.
-    """
-    msg = msg.strip()
-    # Common case: "File not found: /very/long/absolute/path/foo.py"
-    if "File not found:" in msg:
-        _, _, tail = msg.partition("File not found:")
-        tail = tail.strip()
-        if "/" in tail:
-            msg = f"File not found: {tail.rsplit('/', 1)[-1]}"
-    if len(msg) > _ERROR_SUFFIX_MAX_LEN:
-        msg = msg[: _ERROR_SUFFIX_MAX_LEN - 3] + "..."
-    return msg
+    """Backward-compatible display wrapper around shared error trimming."""
+    return trim_tool_error(msg)
 
 
 def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
@@ -1301,6 +1293,17 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
         err = data.get("error") or data.get("message")
         if err and (data.get("success") is False or "error" in data):
             return True, f" [{_trim_error(str(err))}]"
+
+        # web_extract returns an ``error`` field for every URL, including an
+        # empty one on success. Judge the result values instead of matching
+        # the serialized key name below.
+        if tool_name == "web_extract":
+            classification = classify_web_extract_failure(data)
+            if classification is not None:
+                failed, error = classification
+                if failed:
+                    return True, f" [{_trim_error(error)}]"
+                return False, ""
 
     # Generic heuristic for non-terminal tools
     # Multimodal tool results (dicts with _multimodal=True) are not strings —

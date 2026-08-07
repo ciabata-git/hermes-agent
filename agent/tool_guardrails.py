@@ -14,7 +14,11 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from utils import safe_json_loads
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import (
+    classify_web_extract_failure,
+    file_mutation_result_landed,
+    trim_tool_error,
+)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset(
@@ -200,8 +204,9 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     if file_mutation_result_landed(tool_name, result):
         return False, ""
 
+    data = safe_json_loads(result)
+
     if tool_name == "terminal":
-        data = safe_json_loads(result)
         if isinstance(data, dict):
             exit_code = data.get("exit_code")
             if exit_code is not None and exit_code != 0:
@@ -209,10 +214,20 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
         return False, ""
 
     if tool_name == "memory":
-        data = safe_json_loads(result)
         if isinstance(data, dict):
             if data.get("success") is False and "exceed the limit" in data.get("error", ""):
                 return True, " [full]"
+
+    if isinstance(data, dict):
+        err = data.get("error") or data.get("message")
+        if err and (data.get("success") is False or "error" in data):
+            return True, f" [{trim_tool_error(str(err))}]"
+
+    if tool_name == "web_extract":
+        classification = classify_web_extract_failure(data)
+        if classification is not None:
+            failed, error = classification
+            return (True, f" [{trim_tool_error(error)}]") if failed else (False, "")
 
     lower = result[:500].lower()
     if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
