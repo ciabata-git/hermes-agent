@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 
 FILE_MUTATING_TOOL_NAMES = frozenset({"write_file", "patch"})
 TOOL_ERROR_SUFFIX_MAX_LEN = 48
+_ANSI_ESCAPE_RE = re.compile(
+    r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)|[@-_])"
+)
+_CONTROL_CHARACTER_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 # Tools whose interrupted/dangling execution is safe to discard because they
@@ -26,7 +31,9 @@ def tool_may_have_side_effect(tool_name: str) -> bool:
 
 def trim_tool_error(msg: str) -> str:
     """Shrink a structured tool error for a compact status suffix."""
-    msg = msg.strip()
+    msg = _ANSI_ESCAPE_RE.sub("", msg)
+    msg = _CONTROL_CHARACTER_RE.sub(" ", msg)
+    msg = " ".join(msg.split())
     if "File not found:" in msg:
         _, _, tail = msg.partition("File not found:")
         tail = tail.strip()

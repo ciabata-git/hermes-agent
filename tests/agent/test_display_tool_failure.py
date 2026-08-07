@@ -35,6 +35,12 @@ class TestTrimError:
 
 
 
+    def test_control_characters_and_ansi_are_sanitized(self):
+        trimmed = _trim_error("first line\n\x1b[31mspoof\ttext")
+        assert trimmed == "first line spoof text"
+        assert "\n" not in trimmed
+        assert "\x1b" not in trimmed
+
 
 class TestDetectToolFailureTerminal:
     """terminal: non-zero exit_code is the canonical failure signal."""
