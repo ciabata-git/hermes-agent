@@ -955,6 +955,7 @@ class _ReviewRuntimeBinding(NamedTuple):
     explicit_api_key: Optional[str]
     explicit_base_url: Optional[str]
     request_overrides: Dict[str, Any]
+    reasoning_config: Optional[Dict[str, Any]]
 
 
 def _merge_request_overrides(runtime_overrides: Any, slot_extra_body: Any) -> Dict[str, Any]:
@@ -973,7 +974,18 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
     Non-empty slot ``api_key``/``base_url`` are returned as explicit overrides so ``resolve_runtime_provider`` doesn't reuse the main chat credential chain."""
     def _slot(provider: str, model: str, slot: Dict[str, Any]) -> _ReviewRuntimeBinding:
         api_key, base_url = ((str(v).strip() or None) if v is not None else None for v in (slot.get("api_key"), slot.get("base_url")))
-        return _ReviewRuntimeBinding(provider, model, api_key, base_url, _merge_request_overrides({}, slot.get("extra_body")))
+        reasoning_config = None
+        effort = slot.get("reasoning_effort")
+        if effort not in (None, ""):
+            from hermes_constants import parse_reasoning_effort
+            reasoning_config = parse_reasoning_effort(effort)
+            if reasoning_config is None:
+                logger.warning(
+                    "curator: ignoring invalid auxiliary.curator.reasoning_effort=%r", effort)
+        return _ReviewRuntimeBinding(
+            provider, model, api_key, base_url,
+            _merge_request_overrides({}, slot.get("extra_body")), reasoning_config,
+        )
 
     task = _subdict(cfg, "auxiliary", "curator")
     task_provider = (task.get("provider") or "").strip() or None
@@ -985,20 +997,23 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
         logger.info("curator: using deprecated curator.auxiliary.{provider,model} config — please migrate to auxiliary.curator.{provider,model}")
         return _slot(str(legacy["provider"]), str(legacy["model"]), legacy)
     main = _subdict(cfg, "model")
-    return _ReviewRuntimeBinding(main.get("provider") or "auto", main.get("default") or main.get("model") or "", None, None, {})
+    return _ReviewRuntimeBinding(
+        main.get("provider") or "auto", main.get("default") or main.get("model") or "", None, None, {}, None,
+    )
 
 
 def _resolve_review_provider() -> tuple:
-    """``(runtime_provider, model_name, provider_name, request_overrides)`` resolved the way the CLI does: AIAgent() without
+    """``(runtime_provider, model_name, provider_name, request_overrides, reasoning_config)`` resolved the way the CLI does: AIAgent() without
     explicit provider/model hits an auto-resolution path that fails for OAuth-only providers and pooled credentials
     (HTTP 400 "No models provided"). Never raises."""
     rp: Dict[str, Any] = {}
-    overrides, provider, model_name = {}, None, ""
+    overrides, provider, model_name, reasoning_config = {}, None, "", None
     try:
         from hermes_cli.config import load_config_readonly
         from hermes_cli.runtime_provider import resolve_runtime_provider
         binding = _resolve_review_runtime(load_config_readonly())
         model_name = binding.model
+        reasoning_config = binding.reasoning_config
         rp = resolve_runtime_provider(
             requested=binding.provider, target_model=binding.model,
             explicit_api_key=binding.explicit_api_key, explicit_base_url=binding.explicit_base_url,
@@ -1009,7 +1024,7 @@ def _resolve_review_provider() -> tuple:
             model_name = rp["model"].strip()
     except Exception as e:
         logger.debug("Curator provider resolution failed: %s", e, exc_info=True)
-    return rp, model_name, provider, overrides
+    return rp, model_name, provider, overrides, reasoning_config
 
 
 def _run_llm_review(prompt: str) -> Dict[str, Any]:
@@ -1021,7 +1036,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     except Exception as e:
         result_meta["error"] = result_meta["summary"] = f"AIAgent import failed: {e}"
         return result_meta
-    rp, model_name, provider, request_overrides = _resolve_review_provider()
+    rp, model_name, provider, request_overrides, reasoning_config = _resolve_review_provider()
     result_meta["model"], result_meta["provider"] = model_name, provider or ""
     review_agent = None
     try:
@@ -1032,7 +1047,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         review_agent = AIAgent(
             model=model_name, provider=provider, api_key=rp.get("api_key"), base_url=rp.get("base_url"),
             api_mode=rp.get("api_mode"), credential_pool=rp.get("credential_pool"),
-            request_overrides=request_overrides, **agent_kwargs,
+            reasoning_config=reasoning_config, request_overrides=request_overrides, **agent_kwargs,
             # No ``terminal``: a shell mv/cp/rm under the skills tree writes bytes
             # with NO ledger entry, so rollback would restore a hollow skill. Every
             # mutation goes through ledgered skill_manage; dropping the toolset

@@ -775,14 +775,14 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
         def close(self):
             pass
 
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config",
-        lambda: {"model": {"provider": "custom:hyper-charm", "default": "glm-5.2"}},
-    )
-    monkeypatch.setattr(
-        "hermes_cli.config.load_config_readonly",
-        lambda: {"model": {"provider": "custom:hyper-charm", "default": "glm-5.2"}},
-    )
+    cfg = {
+        "model": {"provider": "custom:hyper-charm", "default": "glm-5.2"},
+        "auxiliary": {"curator": {
+            "provider": "custom", "model": "review-model", "reasoning_effort": "max",
+        }},
+    }
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
     monkeypatch.setattr(
         "hermes_cli.runtime_provider.resolve_runtime_provider",
         _fake_resolve_runtime_provider,
@@ -794,6 +794,7 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
     assert meta.get("error") is None, meta.get("error")
     assert captured["kwargs"]["credential_pool"] is fake_pool
     assert captured["kwargs"]["request_overrides"] == fake_overrides
+    assert captured["kwargs"]["reasoning_config"] == {"enabled": True, "effort": "max"}
 
 
 def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch):
